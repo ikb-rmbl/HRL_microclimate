@@ -7,7 +7,7 @@
 ##USAGE: None, internal function typically called by merge_micro_csv.
 ##ARGS: csv_name - The path to the file that should be processed.
 
-micro_csv <- function(csv_name) {
+micro_csv <- function(csv_name,data_column=4) {
 
   ## Checks to make sure that the file exists in the current working directory.
   stopifnot(file.exists(csv_name))
@@ -35,6 +35,7 @@ micro_csv <- function(csv_name) {
   is.datetime <- unlist(strsplit(header[1],split=","))[1] == "Date/Time"
   is.ibutton <- any(grepl("iButton", header))  # determine whether the sensor is an ibutton or not
   is.hobo <- any(grepl("Plot", header)) && any(grepl("Time", header)) && any(grepl("Title", header))
+  is.tms <- grepl("0;",header[1])
   if (is.formatted == TRUE){
     file <- read.table(csv_name,skip=1,sep=",")
     DateTime <- paste(file[,2],"/",file[,3],"/",file[,1]," ",file[,4],":00",sep="")
@@ -115,6 +116,12 @@ micro_csv <- function(csv_name) {
     }
     file <- file[,2:4]  # remove all columns except 2 and 3 (date/time and temperature)
   }  # end HOBO-specific procedure
+  else if(is.tms==TRUE){
+    file <- read.table(csv_name, header = F, sep=";",skip=0,fill=TRUE)
+    file <- file[,c(2,data_column)]
+    file$V2 <- strptime(as.character(file[,1]),format="%Y.%m.%d %H:%M",tz="GMT")
+    file$Pad <- NA
+  }
   else{
     print(paste("Could not recognize the formatting of ",csv_name))
   }
@@ -126,6 +133,9 @@ micro_csv <- function(csv_name) {
     tz <- "US/Pacific-New"
   }
   else if(any(grepl("GMT-00:00", header,fixed=T))){
+    tz <- "GMT"
+  }
+  else if(attr(file[,1],"tzone")=="GMT"){
     tz <- "GMT"
   }
   else{
@@ -142,6 +152,8 @@ micro_csv <- function(csv_name) {
   # Converts date vector to separate columns for year,month,day,and hour.
   if(class(file$DateTime)[1]=="POSIXct"){
     dateTime <- file$DateTime
+  }else if(class(file$DateTime)[1]=="POSIXlt"){
+    dateTime <- as.POSIXct(file$DateTime)
   }else if(am.pm && valid.year) {
     dateTime <- strptime(file$DateTime, "%m/%d/%Y %r")
   }else if(am.pm==FALSE && valid.year==TRUE) {
@@ -187,6 +199,7 @@ micro_csv <- function(csv_name) {
                       temp_max=temp_max,
                       hobo=is.hobo,
                       ibutton=is.ibutton,
+                      tms4=is.tms,
                       formatted=is.formatted,
                       datetime=is.datetime,
                       tz=tz)
@@ -215,6 +228,7 @@ format_micro_csv <- function(input_paths = getwd(),
                              output_path = NULL,
                              file_prefixes = NULL,
                              output_metadata_filename="metadata.txt",
+                             data_column=4,
                              overwrite=FALSE){
   
   ##Checks inputs
@@ -247,7 +261,7 @@ format_micro_csv <- function(input_paths = getwd(),
     flush.console()
     print(paste("Now processing files in folder ",input_paths[i]))
     files <- list.files(".",pattern=".csv$") # lists all the .csv files in the working directory 
-    dfs <- lapply(X = files, FUN = micro_csv)  # process all .csv files in the working directory into a list of lists.
+    dfs <- lapply(X = files, FUN = micro_csv,data_column=data_column)  # process all .csv files in the working directory into a list of lists.
     
     ## write the modified files as .csv files to an output folder
     
@@ -395,6 +409,16 @@ merge_micro_csv <- function(input_path=NULL,
   sensors <- read.csv(sensor_metadata_path)
   stopifnot(sensor_metadata_join_column %in% colnames(sensors))
   stopifnot(all(!is.na(sensors[,c(sensor_metadata_join_column)])))
+  
+  ##Removes final file name part for tms4 sensors.
+  if(grepl("data_",metadata_files[,file_metadata_join_column][1])){
+    old_metadata <- metadata_files[,file_metadata_join_column]
+    new_metadata <- paste(stringr::str_split_fixed(old_metadata,pattern="_",n=3)[,1],
+                         stringr::str_split_fixed(old_metadata,pattern="_",n=3)[,2],
+                         sep="_")
+    metadata_files[,file_metadata_join_column] <- new_metadata
+  }
+  
   
   ##joins file records to metadata.
   metadata_files_all <- merge(metadata_files,sensors,by.x=file_metadata_join_column,
@@ -1299,7 +1323,7 @@ clean_soil_temps <- function(input_path = NULL,
                             output_path = NULL,
                             output_metadata_filename = NULL,
                             figure_path = NULL,
-                            guess_tz="Etc/GMT-7",
+                            guess_tz="UTC",
                             out_tz="Etc/GMT-7",
                             tz_tolerance=6,
                             temp_spike_thresh=20,
